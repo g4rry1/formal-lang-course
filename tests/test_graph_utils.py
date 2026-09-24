@@ -6,7 +6,7 @@ import networkx as nx
 import pydot
 import pytest
 
-from project.graph_utils import Graph, create_two_cycles_graph, get_graph_info
+from project.graph_utils import GraphInfo, create_two_cycles_graph, get_graph_info
 
 
 def test_get_graph_info_from_csv(tmp_path, monkeypatch):
@@ -22,7 +22,7 @@ def test_get_graph_info_from_csv(tmp_path, monkeypatch):
 
     info = get_graph_info("example")
 
-    assert isinstance(info, Graph)
+    assert isinstance(info, GraphInfo)
     assert info == (3, 5, {"a", "b"})
     assert info.vertex_count == 3
     assert info.edge_count == 5
