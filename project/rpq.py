@@ -2,7 +2,7 @@
 
 import networkx as nx
 from pyformlang.finite_automaton import Symbol
-from scipy.sparse import csr_array, eye_array, kron
+from scipy.sparse import coo_array, csr_array, eye_array, kron
 
 from project.adjacency_matrix_fa import AdjacencyMatrixFA
 from project.graph_utils import graph_to_nfa
@@ -87,3 +87,52 @@ def tensor_based_rpq(
         for target_index in final_indices.intersection(row.indices):
             answer.add((start_state[1].value, product.states[target_index][1].value))
     return answer
+
+
+def ms_bfs_based_rpq(
+    regex: str,
+    graph: nx.MultiDiGraph,
+    start_nodes: set[int],
+    final_nodes: set[int],
+) -> set[tuple[int, int]]:
+    """Find matching paths from several graph vertices with sparse BFS.
+
+    Each matrix row tracks the product states reached from one start vertex.
+    An empty endpoint set selects every graph vertex.
+    """
+
+    graph_nodes = set(graph.nodes)
+    selected_starts = (set(start_nodes) if start_nodes else graph_nodes) & graph_nodes
+    selected_finals = (set(final_nodes) if final_nodes else graph_nodes) & graph_nodes
+    if not selected_starts or not selected_finals:
+        return set()
+
+    regex_automaton = AdjacencyMatrixFA(regex_to_dfa(regex))
+    graph_automaton = AdjacencyMatrixFA(
+        graph_to_nfa(graph, selected_starts, selected_finals)
+    )
+    product = intersect_automata(regex_automaton, graph_automaton)
+
+    starts = tuple(selected_starts)
+    start_to_row = {vertex: row for row, vertex in enumerate(starts)}
+    initial_rows = [start_to_row[state[1].value] for state in product.start_states]
+    initial_columns = [product.state_to_index[state] for state in product.start_states]
+    frontier = coo_array(
+        ([True] * len(initial_rows), (initial_rows, initial_columns)),
+        shape=(len(starts), len(product.states)),
+        dtype=bool,
+    ).tocsr()
+    visited = frontier.copy()
+
+    while frontier.nnz:
+        reached = (frontier @ product.adjacency_matrix).tocsr()
+        frontier = reached != reached.multiply(visited)
+        visited = (visited + frontier).tocsr()
+
+    final_states = tuple(product.final_states)
+    final_columns = [product.state_to_index[state] for state in final_states]
+    accepted = visited[:, final_columns].tocoo()
+    return {
+        (starts[row], final_states[column][1].value)
+        for row, column in zip(accepted.row, accepted.col)
+    }
