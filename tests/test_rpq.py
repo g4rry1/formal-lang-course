@@ -154,3 +154,15 @@ def test_ms_bfs_matches_graph_search_on_small_random_graphs():
             assert ms_bfs_based_rpq(regex, graph, start_nodes, final_nodes) == (
                 _reference_rpq(regex, graph, start_nodes, final_nodes)
             )
+
+
+def test_ms_bfs_multiplies_original_transition_matrices(monkeypatch):
+    graph = nx.MultiDiGraph()
+    graph.add_edge(0, 1, label="a")
+
+    def reject_intersection(*_args):
+        raise AssertionError("MS-BFS must not build an automata intersection")
+
+    monkeypatch.setattr("project.rpq.intersect_automata", reject_intersection)
+
+    assert ms_bfs_based_rpq("a", graph, {0}, {1}) == {(0, 1)}

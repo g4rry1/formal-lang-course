@@ -97,7 +97,8 @@ def ms_bfs_based_rpq(
 ) -> set[tuple[int, int]]:
     """Find matching paths from several graph vertices with sparse BFS.
 
-    Each matrix row tracks the product states reached from one start vertex.
+    Each row tracks one original start vertex and one query state. Transitions
+    multiply the query and graph matrices for each shared edge label.
     An empty endpoint set selects every graph vertex.
     """
 
@@ -111,28 +112,64 @@ def ms_bfs_based_rpq(
     graph_automaton = AdjacencyMatrixFA(
         graph_to_nfa(graph, selected_starts, selected_finals)
     )
-    product = intersect_automata(regex_automaton, graph_automaton)
 
     starts = tuple(selected_starts)
-    start_to_row = {vertex: row for row, vertex in enumerate(starts)}
-    initial_rows = [start_to_row[state[1].value] for state in product.start_states]
-    initial_columns = [product.state_to_index[state] for state in product.start_states]
+    start_to_index = {vertex: index for index, vertex in enumerate(starts)}
+    start_count = len(starts)
+    query_count = len(regex_automaton.states)
+    graph_count = len(graph_automaton.states)
+    if not query_count:
+        return set()
+
+    initial_positions = [
+        (
+            start_to_index[graph_state.value] * query_count
+            + regex_automaton.state_to_index[query_state],
+            graph_automaton.state_to_index[graph_state],
+        )
+        for graph_state in graph_automaton.start_states
+        for query_state in regex_automaton.start_states
+    ]
+    initial_rows, initial_columns = (
+        zip(*initial_positions) if initial_positions else ((), ())
+    )
     frontier = coo_array(
-        ([True] * len(initial_rows), (initial_rows, initial_columns)),
-        shape=(len(starts), len(product.states)),
+        ([True] * len(initial_positions), (initial_rows, initial_columns)),
+        shape=(start_count * query_count, graph_count),
         dtype=bool,
     ).tocsr()
     visited = frontier.copy()
 
+    shared_symbols = (
+        regex_automaton.transition_matrices.keys()
+        & graph_automaton.transition_matrices.keys()
+    )
+    start_identity = eye_array(start_count, format="csr", dtype=bool)
+    query_transitions = {
+        symbol: kron(start_identity, matrix.transpose(), format="csr")
+        for symbol, matrix in regex_automaton.transition_matrices.items()
+        if symbol in shared_symbols
+    }
+
     while frontier.nnz:
-        reached = (frontier @ product.adjacency_matrix).tocsr()
+        reached = csr_array(frontier.shape, dtype=bool)
+        for symbol in shared_symbols:
+            # Move graph vertices along this label, then advance query states.
+            reached += query_transitions[symbol] @ (
+                frontier @ graph_automaton.transition_matrices[symbol]
+            )
         frontier = reached != reached.multiply(visited)
         visited = (visited + frontier).tocsr()
 
-    final_states = tuple(product.final_states)
-    final_columns = [product.state_to_index[state] for state in final_states]
-    accepted = visited[:, final_columns].tocoo()
+    final_query_indices = {
+        regex_automaton.state_to_index[state] for state in regex_automaton.final_states
+    }
+    final_graph_indices = {
+        graph_automaton.state_to_index[state] for state in graph_automaton.final_states
+    }
+    accepted = visited.tocoo()
     return {
-        (starts[row], final_states[column][1].value)
+        (starts[row // query_count], graph_automaton.states[column].value)
         for row, column in zip(accepted.row, accepted.col)
+        if row % query_count in final_query_indices and column in final_graph_indices
     }
