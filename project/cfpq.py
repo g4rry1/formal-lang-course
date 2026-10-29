@@ -1,9 +1,10 @@
-"""Weak Chomsky normal form and context-free path queries via Hellings."""
+"""Weak Chomsky normal form and context-free path query algorithms."""
 
 from collections import defaultdict, deque
 
 import networkx as nx
 from pyformlang.cfg import CFG, Production, Terminal, Variable
+from scipy.sparse import coo_array, csr_array
 
 from project.graph_utils import graph_to_nfa
 
@@ -106,4 +107,75 @@ def hellings_based_cfpq(
         if variable == normal_form.start_symbol
         and source in starts
         and target in finals
+    }
+
+
+def matrix_based_cfpq(
+    cfg: CFG,
+    graph: nx.DiGraph,
+    start_nodes: set[int] | None = None,
+    final_nodes: set[int] | None = None,
+) -> set[tuple[int, int]]:
+    """Find vertex pairs accepted by ``cfg`` using sparse Boolean matrices.
+
+    Each nonterminal has a matrix of currently known paths. Terminal and
+    epsilon rules seed the matrices; binary rules add matrix products until
+    no new paths can be derived. Empty endpoint sets select all vertices.
+    """
+
+    vertices = tuple(graph.nodes)
+    vertex_set = set(vertices)
+    starts = vertex_set if not start_nodes else vertex_set & set(start_nodes)
+    finals = vertex_set if not final_nodes else vertex_set & set(final_nodes)
+    if not starts or not finals:
+        return set()
+
+    normal_form = cfg_to_weak_normal_form(cfg)
+    vertex_to_index = {vertex: index for index, vertex in enumerate(vertices)}
+    size = len(vertices)
+    terminal_heads: dict[Terminal, set[Variable]] = defaultdict(set)
+    binary_rules: list[tuple[Variable, Variable, Variable]] = []
+    rows: dict[Variable, list[int]] = defaultdict(list)
+    columns: dict[Variable, list[int]] = defaultdict(list)
+
+    for production in normal_form.productions:
+        body = production.body
+        if not body:
+            rows[production.head].extend(range(size))
+            columns[production.head].extend(range(size))
+        elif len(body) == 1:
+            terminal_heads[body[0]].add(production.head)
+        else:
+            left, right = body
+            binary_rules.append((production.head, left, right))
+
+    for source, target, label in graph.edges(data="label"):
+        for head in terminal_heads.get(Terminal(label), ()):
+            rows[head].append(vertex_to_index[source])
+            columns[head].append(vertex_to_index[target])
+
+    matrices: dict[Variable, csr_array] = {}
+    for variable in normal_form.variables | {normal_form.start_symbol}:
+        indices = rows[variable], columns[variable]
+        matrices[variable] = coo_array(
+            ([True] * len(indices[0]), indices), shape=(size, size), dtype=bool
+        ).tocsr()
+
+    while True:
+        changed = False
+        for head, left, right in binary_rules:
+            product = matrices[left] @ matrices[right]
+            if product.nnz:
+                updated = (matrices[head] + product).tocsr()
+                if updated.nnz > matrices[head].nnz:
+                    matrices[head] = updated
+                    changed = True
+        if not changed:
+            break
+
+    answer = matrices[normal_form.start_symbol].tocoo()
+    return {
+        (vertices[source], vertices[target])
+        for source, target in zip(answer.row, answer.col)
+        if vertices[source] in starts and vertices[target] in finals
     }
